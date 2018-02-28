@@ -257,6 +257,7 @@ typedef enum handshake_state_t { STATE0 = 0, STATE1, STATE2,
 	STATE90=90, STATE91, STATE92, STATE93,
 	STATE100=100, STATE101, STATE102, STATE103, STATE104,
 	STATE105, STATE106, STATE107, STATE108, STATE109, STATE110,
+	STATE111, /* new session ticket */
 	STATE150 /* key update */
 } handshake_state_t;
 
@@ -473,6 +474,13 @@ struct gnutls_key_st {
 			uint8_t hs_ckey[MAX_HASH_SIZE]; /* client_handshake_traffic_secret */
 			uint8_t hs_skey[MAX_HASH_SIZE]; /* server_handshake_traffic_secret */
 			uint8_t ap_expkey[MAX_HASH_SIZE]; /* exporter_master_secret */
+			uint8_t ap_rms[MAX_HASH_SIZE]; /* resumption_master_secret */
+			/*
+			 * This is the resumption master secret from the original connection.
+			 * Used for session resumption.
+			 */
+			gnutls_datum_t ap_rms_original;
+			gnutls_mac_algorithm_t kdf_original; /* KDF of the original connection */
 		} tls13; /* tls1.3 */
 
 		/* Folow the SSL3.0 and TLS1.2 key exchanges */
@@ -509,6 +517,18 @@ struct gnutls_key_st {
 
 	/* TLS pre-master key; applies to 1.2 and 1.3 */
 	gnutls_datum_t key;
+
+#ifdef ENABLE_SESSION_TICKETS
+	/* The key to encrypt and decrypt session tickets */
+#define KEY_NAME_SIZE 16
+#define CIPHER_KEY_SIZE 32
+#define MAC_SECRET_SIZE 16
+#define SESSION_KEY_SIZE (KEY_NAME_SIZE+CIPHER_KEY_SIZE+MAC_SECRET_SIZE)
+#define NAME_POS (0)
+#define KEY_POS (KEY_NAME_SIZE)
+#define MAC_SECRET_POS (KEY_NAME_SIZE+CIPHER_KEY_SIZE)
+	uint8_t session_ticket_key[SESSION_KEY_SIZE];
+#endif
 
 	/* this is used to hold the peers authentication data 
 	 */
@@ -1286,6 +1306,13 @@ typedef struct {
 
 	/* the ciphersuite received in HRR */
 	uint8_t hrr_cs[2];
+
+	int session_ticket_enable;
+	int session_ticket_renew;
+
+	void *tls13_ticket;
+	unsigned tls13_ticket_len;
+	int tls13_session_ticket_renew;
 
 	/* If you add anything here, check _gnutls_handshake_internal_state_clear().
 	 */

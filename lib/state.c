@@ -51,6 +51,7 @@
 #include <intprops.h>
 #include <gnutls/dtls.h>
 #include "dtls.h"
+#include "tls13/session_ticket.h"
 
 /* These should really be static, but src/tests.c calls them.  Make
    them public functions?  */
@@ -443,6 +444,9 @@ void gnutls_deinit(gnutls_session_t session)
 
 	gnutls_credentials_clear(session);
 	_gnutls_selected_certs_deinit(session);
+
+	/* destroy any session ticket we may have received */
+	_gnutls13_session_ticket_unset(session);
 
 	/* we rely on priorities' internal reference counting */
 	gnutls_priority_deinit(session->internals.priorities);

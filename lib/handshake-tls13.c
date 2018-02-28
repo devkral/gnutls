@@ -54,7 +54,7 @@
 #include "tls13/certificate.h"
 #include "tls13/finished.h"
 #include "tls13/key_update.h"
-#include "tls13/session_ticket.h"
+#include "ext/pre_shared_key.h"
 
 static int generate_hs_traffic_keys(gnutls_session_t session);
 static int generate_ap_traffic_keys(gnutls_session_t session);
@@ -184,6 +184,18 @@ static int generate_ap_traffic_keys(gnutls_session_t session)
 	_gnutls_nss_keylog_write(session, "EXPORTER_SECRET",
 				 session->key.proto.tls13.ap_expkey,
 				 session->security_parameters.prf->output_size);
+
+	ret = _tls13_derive_secret(session, RMS_MASTER_LABEL, sizeof(RMS_MASTER_LABEL) - 1,
+			session->internals.handshake_hash_buffer.data,
+			session->internals.handshake_hash_buffer_server_finished_len,
+			session->key.proto.tls13.temp_secret,
+			session->key.proto.tls13.ap_rms);
+	if (ret < 0)
+		return gnutls_assert_val(ret);
+
+	_gnutls_nss_keylog_write(session, "RESUMPTION_MASTER_SECRET",
+			session->key.proto.tls13.ap_rms,
+			session->security_parameters.prf->output_size);
 
 	_gnutls_epoch_bump(session);
 	ret = _gnutls_epoch_dup(session);
@@ -352,6 +364,7 @@ _gnutls13_recv_async_handshake(gnutls_session_t session, gnutls_buffer_st *buf)
 	int ret;
 	size_t handshake_header_size = HANDSHAKE_HEADER_SIZE(session);
 	size_t length;
+	struct tls13_nst_st ticket;
 
 	if (buf->length < handshake_header_size) {
 		gnutls_assert();
@@ -399,9 +412,18 @@ _gnutls13_recv_async_handshake(gnutls_session_t session, gnutls_buffer_st *buf)
 			if (session->security_parameters.entity != GNUTLS_CLIENT)
 				return gnutls_assert_val(GNUTLS_E_UNEXPECTED_PACKET);
 
-			ret = _gnutls13_recv_session_ticket(session, buf);
+			memset(&ticket, 0, sizeof(struct tls13_nst_st));
+			ret = _gnutls13_recv_session_ticket(session, buf, &ticket);
 			if (ret < 0)
 				return gnutls_assert_val(ret);
+
+			ret = _gnutls13_session_ticket_set(session, &ticket,
+					session->key.proto.tls13.ap_rms,
+					session->key.proto.tls13.temp_secret_size,
+					session->security_parameters.prf);
+			if (ret < 0)
+				return gnutls_assert_val(ret);
+			memset(&ticket, 0, sizeof(struct tls13_nst_st));
 			break;
 		default:
 			gnutls_assert();

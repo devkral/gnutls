@@ -44,6 +44,7 @@
 #include <algorithms.h>
 #include <state.h>
 #include <db.h>
+#include "tls13/session_ticket.h"
 
 static int pack_certificate_auth_info(gnutls_session_t,
 				      gnutls_buffer_st * packed_session);
@@ -69,6 +70,11 @@ static int unpack_security_parameters(gnutls_session_t session,
 				      gnutls_buffer_st * packed_session);
 static int pack_security_parameters(gnutls_session_t session,
 				    gnutls_buffer_st * packed_session);
+static int tls13_unpack_security_parameters(gnutls_session_t session,
+					    gnutls_buffer_st * packed_session,
+					    const mac_entry_st * prf);
+static int tls13_pack_security_parameters(gnutls_session_t session,
+					  gnutls_buffer_st * packed_session);
 
 
 /* Since auth_info structures contain malloced data, this function
@@ -148,6 +154,15 @@ _gnutls_session_pack(gnutls_session_t session,
 	if (ret < 0) {
 		gnutls_assert();
 		goto fail;
+	}
+
+
+	if (session->security_parameters.pversion->tls13_sem) {
+		ret = tls13_pack_security_parameters(session, &sb);
+		if (ret < 0) {
+			gnutls_assert();
+			goto fail;
+		}
 	}
 
 	ret = _gnutls_hello_ext_pack(session, &sb);
@@ -256,6 +271,16 @@ _gnutls_session_unpack(gnutls_session_t session,
 		goto error;
 	}
 
+	if (session->internals.resumed_security_parameters.pversion->tls13_sem) {
+		/* 'prf' will not be NULL at this point, else unpack_security_parameters() would have failed */
+		ret = tls13_unpack_security_parameters(session, &sb,
+				session->internals.resumed_security_parameters.prf);
+		if (ret < 0) {
+			gnutls_assert();
+			goto error;
+		}
+	}
+
 	ret = _gnutls_hello_ext_unpack(session, &sb);
 	if (ret < 0) {
 		gnutls_assert();
@@ -270,7 +295,106 @@ _gnutls_session_unpack(gnutls_session_t session,
 	return ret;
 }
 
+/*
+ * If we're using TLS 1.3 semantics, we might have TLS 1.3-specific data.
+ * Format:
+ *      4 bytes the total length
+ *      4 bytes the ticket lifetime
+ *      4 bytes the ticket age add value
+ *      4 byte the ticket nonce length
+ *      x bytes the ticket nonce
+ *      4 bytes the ticket length
+ *      x bytes the ticket
+ *      4 bytes the resumption master secret length
+ *      x bytes the resumption master secret
+ *
+ * WE DON'T STORE NewSessionTicket EXTENSIONS, as we don't support them yet.
+ *
+ * We only store that info if we received a TLS 1.3 NewSessionTicket at some point.
+ * If we didn't receive any NST then we cannot resume a TLS 1.3 session and hence
+ * its nonsense to store all that info.
+ */
+static int
+tls13_pack_security_parameters(gnutls_session_t session, gnutls_buffer_st *ps)
+{
+	int ret = 0;
+	uint32_t length = 0;
+	size_t length_pos;
+	struct tls13_nst_st ticket;
 
+	length_pos = ps->length;
+	BUFFER_APPEND_NUM(ps, 0);
+
+	ret = _gnutls13_session_ticket_peek(session, &ticket);
+	if (likely(ret > 0)) {
+		BUFFER_APPEND_NUM(ps, ticket.ticket_timestamp);
+		length += 4;
+		BUFFER_APPEND_NUM(ps, ticket.ticket_lifetime);
+		length += 4;
+		BUFFER_APPEND_NUM(ps, ticket.ticket_age_add);
+		length += 4;
+		BUFFER_APPEND_PFX4(ps,
+				ticket.ticket_nonce.data,
+				ticket.ticket_nonce.size);
+		length += (4 + ticket.ticket_nonce.size);
+		BUFFER_APPEND_PFX4(ps,
+				ticket.ticket.data,
+				ticket.ticket.size);
+		length += (4 + ticket.ticket.size);
+		BUFFER_APPEND_PFX4(ps,
+				ticket.rms.data,
+				ticket.rms.size);
+		length += (4 + ticket.rms.size);
+
+		/* Overwrite the length field */
+		_gnutls_write_uint32(length, ps->data + length_pos);
+	} else if (ret < 0) {
+		return gnutls_assert_val(ret);
+	}
+
+	return ret;
+}
+
+static int
+tls13_unpack_security_parameters(gnutls_session_t session, gnutls_buffer_st *ps,
+		const mac_entry_st *prf)
+{
+	int ret = 0;
+	uint32_t ttl_len;
+	struct tls13_nst_st ticket;
+	gnutls_datum_t rms = {
+		.data = NULL,
+		.size = 0
+	};
+
+	memset(&ticket, 0, sizeof(struct tls13_nst_st));
+
+	BUFFER_POP_NUM(ps, ttl_len);
+
+	if (ttl_len > 0) {
+		BUFFER_POP_NUM(ps, ticket.ticket_timestamp);
+		BUFFER_POP_NUM(ps, ticket.ticket_lifetime);
+		BUFFER_POP_NUM(ps, ticket.ticket_age_add);
+		BUFFER_POP_DATUM(ps, &ticket.ticket_nonce);
+		BUFFER_POP_DATUM(ps, &ticket.ticket);
+		BUFFER_POP_DATUM(ps, &rms);
+
+		if (unlikely(prf == NULL))
+			return gnutls_assert_val(GNUTLS_E_INTERNAL_ERROR);
+
+		ret = _gnutls13_session_ticket_set(session,
+				&ticket,
+				rms.data, rms.size,
+				prf);
+		if (ret < 0)
+			gnutls_assert();
+	}
+
+error:
+	_gnutls13_session_ticket_destroy(&ticket);
+	_gnutls_free_datum(&rms);
+	return ret;
+}
 
 /* Format: 
  *      1 byte the credentials type

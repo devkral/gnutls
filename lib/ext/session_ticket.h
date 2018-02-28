@@ -25,9 +25,26 @@
 
 #include <hello_ext.h>
 
+#define KEY_NAME_SIZE 16
+#define IV_SIZE 16
+#define MAC_SIZE 20 /* HMAC-SHA1 */
+
+struct ticket_st {
+	uint8_t key_name[KEY_NAME_SIZE];
+	uint8_t IV[IV_SIZE];
+	uint8_t *encrypted_state;
+	uint16_t encrypted_state_len;
+	uint8_t mac[MAC_SIZE];
+};
+
 extern const hello_ext_entry_st ext_mod_session_ticket;
 
 int _gnutls_send_new_session_ticket(gnutls_session_t session, int again);
 int _gnutls_recv_new_session_ticket(gnutls_session_t session);
+
+int _gnutls_encrypt_session_ticket(gnutls_session_t session,
+		struct ticket_st *ticket);
+int _gnutls_decrypt_session_ticket(gnutls_session_t session,
+		struct ticket_st *ticket);
 
 #endif

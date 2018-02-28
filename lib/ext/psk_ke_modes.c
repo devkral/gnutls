@@ -21,6 +21,7 @@
  */
 
 #include "gnutls_int.h"
+#include "tls13/session_ticket.h"
 #include <ext/psk_ke_modes.h>
 
 #define PSK_DHE_KE 1
@@ -59,8 +60,17 @@ psk_ke_modes_send_params(gnutls_session_t session,
 
 	cred = (gnutls_psk_client_credentials_t)
 			_gnutls_get_cred(session, GNUTLS_CRD_PSK);
+	if (cred)
+		goto have_psk;
 
-	if (cred) {
+	/*
+	 * No out-of-band PSKs - do we have a session ticket?
+	 * We're not interested in the ticket itself.
+	 */
+	retval = _gnutls13_session_ticket_peek(session, NULL);
+
+have_psk:
+	if (cred || retval) {
 		retval = send_params(extdata, PSK_DHE_KE);
 		if (retval < 0)
 			gnutls_assert_val(retval);

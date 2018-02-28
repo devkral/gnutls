@@ -228,6 +228,7 @@ gnutls_session_set_data(gnutls_session_t session,
 	}
 
 	session->internals.resumption_requested = 1;
+	session->internals.session_ticket_enable = 1;
 
 	if (session->internals.resumption_data.data != NULL)
 		gnutls_free(session->internals.resumption_data.data);
