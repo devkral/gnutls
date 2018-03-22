@@ -65,14 +65,12 @@ static void tls_log_func(int level, const char *str)
 #define MAX_BUF 1024
 #define MSG "Hello TLS"
 
-static void client(int sd, const char *prio, const char *user, unsigned expect_fail)
+static void client(int sd, const char *prio, const char *user, const gnutls_datum_t *key, unsigned expect_hint, int expect_fail)
 {
 	int ret, ii;
 	gnutls_session_t session;
 	char buffer[MAX_BUF + 1];
 	gnutls_psk_client_credentials_t pskcred;
-	/* Need to enable anonymous KX specifically. */
-	const gnutls_datum_t key = { (void *) "9e32cf7786321a828ef7668f09fb35db", 32 };
 	const char *hint;
 
 	global_init();
@@ -83,7 +81,7 @@ static void client(int sd, const char *prio, const char *user, unsigned expect_f
 	side = "client";
 
 	gnutls_psk_allocate_client_credentials(&pskcred);
-	gnutls_psk_set_client_credentials(pskcred, user, &key,
+	gnutls_psk_set_client_credentials(pskcred, user, key,
 					  GNUTLS_PSK_KEY_HEX);
 
 	/* Initialize TLS session
@@ -106,7 +104,10 @@ static void client(int sd, const char *prio, const char *user, unsigned expect_f
 	if (ret < 0) {
 		if (!expect_fail)
 			fail("client: Handshake failed\n");
-		gnutls_perror(ret);
+		if (ret != expect_fail) {
+			fail("expected cli error %d (%s), got %d (%s)\n", expect_fail, gnutls_strerror(expect_fail),
+								      ret, gnutls_strerror(ret));
+		}
 		goto end;
 	} else {
 		if (debug)
@@ -114,10 +115,12 @@ static void client(int sd, const char *prio, const char *user, unsigned expect_f
 	}
 
 	/* check the hint */
-	hint = gnutls_psk_client_get_hint(session);
-	if (hint == NULL || strcmp(hint, "hint") != 0) {
-		fail("client: hint is not the expected: %s\n", gnutls_psk_client_get_hint(session));
-		goto end;
+	if (expect_hint) {
+		hint = gnutls_psk_client_get_hint(session);
+		if (hint == NULL || strcmp(hint, "hint") != 0) {
+			fail("client: hint is not the expected: %s\n", gnutls_psk_client_get_hint(session));
+			goto end;
+		}
 	}
 
 	gnutls_record_send(session, MSG, strlen(MSG));
@@ -159,7 +162,7 @@ static void client(int sd, const char *prio, const char *user, unsigned expect_f
 
 #define MAX_BUF 1024
 
-static void server(int sd, const char *prio, const char *user, unsigned expect_fail)
+static void server(int sd, const char *prio, const char *user, int expect_fail)
 {
 	gnutls_psk_server_credentials_t server_pskcred;
 	int ret;
@@ -197,10 +200,15 @@ static void server(int sd, const char *prio, const char *user, unsigned expect_f
 	gnutls_transport_set_int(session, sd);
 	ret = gnutls_handshake(session);
 	if (ret < 0) {
+		gnutls_alert_send_appropriate(session, ret);
 		close(sd);
 		gnutls_deinit(session);
 		gnutls_psk_free_server_credentials(server_pskcred);
 		if (expect_fail) {
+			if (ret != expect_fail) {
+				fail("expected error %d (%s), got %d (%s)\n", expect_fail, gnutls_strerror(expect_fail),
+									      ret, gnutls_strerror(ret));
+			}
 			success("server: Handshake has failed - expected (%s)\n\n",
 			     gnutls_strerror(ret));
 		} else {
@@ -251,7 +259,7 @@ static void server(int sd, const char *prio, const char *user, unsigned expect_f
 }
 
 static
-void run_test(const char *prio, const char *user, unsigned expect_fail)
+void run_test2(const char *prio, const char *user, const gnutls_datum_t *key, unsigned expect_hint, int expect_fail_cli, int expect_fail_serv)
 {
 	pid_t child;
 	int err;
@@ -277,22 +285,42 @@ void run_test(const char *prio, const char *user, unsigned expect_fail)
 		close(sockets[1]);
 		int status;
 		/* parent */
-		server(sockets[0], prio, user, expect_fail);
+		server(sockets[0], prio, user, expect_fail_serv);
 		wait(&status);
 		check_wait_status(status);
 	} else {
 		close(sockets[0]);
-		client(sockets[1], prio, user, expect_fail);
+		client(sockets[1], prio, user, key, expect_hint, expect_fail_cli);
 		exit(0);
 	}
 }
 
+static
+void run_test(const char *prio, const char *user, const gnutls_datum_t *key, unsigned expect_hint, int expect_fail)
+{
+	return run_test2(prio, user, key, expect_hint, expect_fail, expect_fail);
+}
+
 void doit(void)
 {
-	run_test("NORMAL:-VERS-ALL:+VERS-TLS1.2:-KX-ALL:+PSK", "jas", 0);
-	run_test("NORMAL:-KX-ALL:+PSK", "jas", 0);
-	run_test("NORMAL:-VERS-ALL:+VERS-TLS1.2:-KX-ALL:+PSK", "non-hex", 1);
-	run_test("NORMAL:-KX-ALL:+PSK", "non-hex", 1);
+	const gnutls_datum_t key = { (void *) "9e32cf7786321a828ef7668f09fb35db", 32 };
+	const gnutls_datum_t wrong_key = { (void *) "9e31cf7786321a828ef7668f09fb35db", 32 };
+
+	run_test("NORMAL:-VERS-ALL:+VERS-TLS1.2:-KX-ALL:+PSK", "jas", &key, 1, 0);
+	run_test2("NORMAL:-VERS-ALL:+VERS-TLS1.2:-KX-ALL:+PSK", "unknown", &key, 1, GNUTLS_E_FATAL_ALERT_RECEIVED, GNUTLS_E_DECRYPTION_FAILED);
+	run_test2("NORMAL:-VERS-ALL:+VERS-TLS1.2:-KX-ALL:+PSK", "jas", &wrong_key, 1, GNUTLS_E_FATAL_ALERT_RECEIVED, GNUTLS_E_DECRYPTION_FAILED);
+	run_test2("NORMAL:-VERS-ALL:+VERS-TLS1.2:-KX-ALL:+PSK", "non-hex", &key, 1, GNUTLS_E_FATAL_ALERT_RECEIVED, GNUTLS_E_KEYFILE_ERROR);
+
+	run_test("NORMAL:-KX-ALL:+PSK", "jas", &key, 1, 0);
+	run_test2("NORMAL:+PSK", "unknown", &key, 1, GNUTLS_E_FATAL_ALERT_RECEIVED, GNUTLS_E_DECRYPTION_FAILED);
+	run_test2("NORMAL:+PSK", "jas", &wrong_key, 1, GNUTLS_E_FATAL_ALERT_RECEIVED, GNUTLS_E_DECRYPTION_FAILED);
+	run_test2("NORMAL:-KX-ALL:+PSK", "non-hex", &key, 1, GNUTLS_E_FATAL_ALERT_RECEIVED, GNUTLS_E_KEYFILE_ERROR);
+
+	run_test("NORMAL:-VERS-ALL:+VERS-TLS1.3", "jas", &key, 0, 0);
+	/* if user invalid we continue without PSK */
+	run_test2("NORMAL:-VERS-ALL:+VERS-TLS1.3", "non-hex", &key, 0, GNUTLS_E_FATAL_ALERT_RECEIVED, GNUTLS_E_INSUFFICIENT_CREDENTIALS);
+	run_test2("NORMAL:-VERS-ALL:+VERS-TLS1.3", "unknown", &key, 0, GNUTLS_E_FATAL_ALERT_RECEIVED, GNUTLS_E_RECEIVED_ILLEGAL_PARAMETER);
+	run_test2("NORMAL:-VERS-ALL:+VERS-TLS1.3", "jas", &wrong_key, 0, GNUTLS_E_FATAL_ALERT_RECEIVED, GNUTLS_E_RECEIVED_ILLEGAL_PARAMETER);
 }
 
 #endif				/* _WIN32 */
