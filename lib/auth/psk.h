@@ -30,6 +30,8 @@ typedef struct gnutls_psk_client_credentials_st {
 	gnutls_datum_t username;
 	gnutls_datum_t key;
 	gnutls_psk_client_credentials_function *get_function;
+	/* TLS 1.3 - The HMAC algorithm to use to compute the binder values */
+	gnutls_mac_algorithm_t tls13_binder_algo;
 } psk_client_credentials_st;
 
 typedef struct gnutls_psk_server_credentials_st {
@@ -50,6 +52,8 @@ typedef struct gnutls_psk_server_credentials_st {
 
 	/* Identity hint. */
 	char *hint;
+	/* TLS 1.3 - HMAC algorithm for the binder values */
+	gnutls_mac_algorithm_t tls13_binder_algo;
 } psk_server_cred_st;
 
 /* these structures should not use allocated data */

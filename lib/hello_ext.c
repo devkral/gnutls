@@ -46,6 +46,8 @@
 #include <ext/alpn.h>
 #include <ext/dumbfw.h>
 #include <ext/key_share.h>
+#include <ext/pre_shared_key.h>
+#include <ext/psk_ke_modes.h>
 #include <ext/etm.h>
 #include <ext/cookie.h>
 #include "extv.h"
@@ -87,6 +89,8 @@ static hello_ext_entry_st const *extfunc[MAX_EXT_TYPES+1] = {
 #ifdef ENABLE_ALPN
 	[GNUTLS_EXTENSION_ALPN] = &ext_mod_alpn,
 #endif
+	[GNUTLS_EXTENSION_PSK_KE_MODES] = &ext_psk_ke_modes,
+	[GNUTLS_EXTENSION_PRE_SHARED_KEY] = &ext_pre_shared_key,
 	/* This must be the last extension registered.
 	 */
 	[GNUTLS_EXTENSION_DUMBFW] = &ext_mod_dumbfw,
@@ -352,6 +356,7 @@ _gnutls_gen_hello_extensions(gnutls_session_t session,
 		return gnutls_assert_val(ret);
 
 	pos = ret;
+	_gnutls_ext_set_extensions_offset(session, pos);
 
 	for (i=0; i < session->internals.rexts_size; i++) {
 		ctx.ext = &session->internals.rexts[i];
@@ -479,6 +484,39 @@ int _gnutls_hello_ext_pack(gnutls_session_t session, gnutls_buffer_st *packed)
 	_gnutls_write_uint32(n_exts, packed->data + total_exts_pos);
 
 	return 0;
+}
+
+int _gnutls_ext_set_full_client_hello(gnutls_session_t session,
+				      handshake_buffer_st *recv_buf)
+{
+	int ret;
+	gnutls_buffer_st *buf = &session->internals.full_client_hello;
+
+	_gnutls_buffer_clear(buf);
+
+	if ((ret = _gnutls_buffer_append_prefix(buf, 8, recv_buf->htype)) < 0)
+		return gnutls_assert_val(ret);
+	if ((ret = _gnutls_buffer_append_prefix(buf, 24, recv_buf->data.length)) < 0)
+		return gnutls_assert_val(ret);
+	if ((ret = _gnutls_buffer_append_data(buf, recv_buf->data.data, recv_buf->data.length)) < 0)
+		return gnutls_assert_val(ret);
+
+	return 0;
+}
+
+int _gnutls_ext_get_full_client_hello(gnutls_session_t session,
+				      gnutls_datum_t *datum)
+{
+	int ret;
+	gnutls_buffer_st *buf = &session->internals.full_client_hello;
+
+	if (!datum)
+		return gnutls_assert_val(GNUTLS_E_INTERNAL_ERROR);
+
+	if ((ret = _gnutls_set_datum(datum, buf->data, buf->length)) < 0)
+		return gnutls_assert_val(ret);
+
+	return buf->length;
 }
 
 static void

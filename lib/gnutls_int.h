@@ -325,7 +325,13 @@ typedef enum extensions_t {
 	GNUTLS_EXTENSION_SAFE_RENEGOTIATION,
 	GNUTLS_EXTENSION_SERVER_NAME,
 	GNUTLS_EXTENSION_COOKIE,
-	GNUTLS_EXTENSION_DUMBFW, /* this must always be the last */
+	GNUTLS_EXTENSION_PSK_KE_MODES,
+	/*
+	 * pre_shared_key and dumbfw must always be the last extensions,
+	 * in that order
+	 */
+	GNUTLS_EXTENSION_PRE_SHARED_KEY,
+	GNUTLS_EXTENSION_DUMBFW,
 	GNUTLS_EXTENSION_MAX /* not real extension - used for iterators */
 } extensions_t;
 
@@ -449,7 +455,7 @@ typedef struct mbuffer_head_st {
 typedef struct auth_cred_st {
 	gnutls_credentials_type_t algorithm;
 
-	/* the type of credentials depends on algorithm 
+	/* the type of credentials depends on algorithm
 	 */
 	void *credentials;
 	struct auth_cred_st *next;
@@ -466,6 +472,15 @@ struct gnutls_key_st {
 	/* The union contents depend on the negotiated protocol */
 	union {
 		struct {
+			/* Pre-shared key in use (if any) */
+			uint8_t *psk;
+			unsigned psk_size;
+			/*
+			 * 0-based index of the selected PSK.
+			 * This only applies if the HSK_PSK_SELECTED flag is set in internals.hsk_flags,
+			 * which signals a PSK has indeed been selected.
+			 */
+			unsigned psk_index;
 			/* the current (depending on state) secret, can be
 			 * early_secret, client_early_traffic_secret, ... */
 			uint8_t temp_secret[MAX_HASH_SIZE];
@@ -1192,10 +1207,18 @@ typedef struct {
 #define HSK_FALSE_START_USED (1<<8) /* TLS1.2 only */
 #define HSK_HAVE_FFDHE (1<<9) /* whether the peer has advertized at least an FFDHE group */
 #define HSK_USED_FFDHE (1<<10) /* whether ffdhe was actually negotiated and used */
+#define HSK_PSK_KE_MODES_SENT (1<<11)
+#define HSK_PSK_KE_MODES_RECEIVED (1<<12)
+#define HSK_PSK_KE_MODES_INVALID (1<<13)
+#define HSK_PSK_SELECTED (1<<14)
 	/* The hsk_flags are for use within the ongoing handshake;
 	 * they are reset to zero prior to handshake start by gnutls_handshake. */
 	unsigned hsk_flags;
 	time_t last_key_update;
+	/* Read-only pointer to the full ClientHello message */
+	gnutls_buffer_st full_client_hello;
+	/* The offset at which extensions start in the ClientHello buffer */
+	int extensions_offset;
 
 	gnutls_buffer_st hb_local_data;
 	gnutls_buffer_st hb_remote_data;
